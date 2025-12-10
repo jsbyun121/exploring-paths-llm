@@ -5,7 +5,7 @@ description = "Exploring Paths in Probabilistic Graphs for Model Training - Rese
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    {name = "Junsoo Byun (변준수)"}
+    {name = "Junsoo Byun"}
 ]
 license = {text = "MIT"}
 keywords = ["reinforcement-learning", "large-language-models", "training", "gsm8k", "probabilistic-graphs"]

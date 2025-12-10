@@ -109,11 +109,10 @@ If you use this code, please cite:
 1. **This research**:
 ```bibtex
 @thesis{Byun2025ExploringPaths,
-    author = {변준수 (Junsoo Byun)},
+    author = {Junsoo Byun},
     title = {Exploring Paths in Probabilistic Graphs for Model Training},
     school = {Seoul National University},
-    year = {2025},
-    type = {Bachelor's Thesis}
+    year = {2025}
 }
 ```
 
