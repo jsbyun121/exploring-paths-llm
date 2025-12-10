@@ -1,6 +1,6 @@
 # Exploring Paths in Probabilistic Graphs for Model Training
 
-This repository contains the implementation and experimental code for the paper **"Exploring Paths in Probabilistic Graphs for Model Training"** (변준수, Seoul National University, 2025).
+This repository contains the implementation and experimental code for the paper **"Exploring Paths in Probabilistic Graphs for Model Training"**.
 
 ## Overview
 
@@ -49,8 +49,8 @@ pip install uv
 
 ```bash
 # Clone the repository
-git clone https://github.com/ChenmienTan/RL2.git
-cd RL2
+git clone https://github.com/jsbyun121/exploring-paths-llm.git
+cd exploring-paths-llm
 
 # Create virtual environment and install dependencies using uv
 uv sync
@@ -335,8 +335,8 @@ Based on the paper results, you should observe:
 
 **1. Test Accuracy (All Methods)**
 - Baseline (Dr.GRPO): Steady improvement
-- Section 3.1 & 3.2: Consistent improvement, similar final performance
-- Section 3.3: Rapid improvement → peak → **collapse**
+- Section 3.1 & 3.2: Consistent improvement, similar final performance → collapse slowly
+- Section 3.3: Rapid improvement → peak → collapse fast
 
 **2. Entropy**
 - All proposed methods show **increasing entropy** (maintaining diversity)
@@ -348,26 +348,7 @@ Based on the paper results, you should observe:
 
 **4. Training Loss**
 - Section 3.1 & 3.2: **Increasing** (more correct paths being optimized)
-- Section 3.3: **Decreasing** (but model collapses - reward hacking)
-
-### Training Phases
-
-As described in the paper (Section 3.1.2):
-
-1. **Phase 1 - Exploration (~0-100 steps):**
-   - Response length increases
-   - Model explores diverse reasoning paths
-   - Entropy increases
-
-2. **Phase 2 - Consolidation (~100-250 steps):**
-   - Response length decreases
-   - Model optimizes to efficient paths
-   - Accuracy continues improving
-
-3. **Phase 3 - Potential Collapse (Section 3.3 only):**
-   - After ~200 steps with fixed target
-   - Accuracy degrades despite decreasing loss
-   - Indicates distribution collapse
+- Section 3.3: **Decreasing** (but model collapses)
 
 ---
 
@@ -404,7 +385,7 @@ The paper proposes several improvements to address stability issues:
 ### 1. Entropy Regularization (Section 4.2)
 Add penalty term to dampen entropy growth:
 ```bash
-actor.entropy.coef=0.1  # or 0.5, 1.0
+actor.entropy.coef=-0.1  # or -0.5, -1.0 (Use negative coefficient to dampen entropy growth)
 ```
 
 ### 2. Rank-Aware Target with JSD (Section 4.3)
@@ -419,84 +400,13 @@ actor.entropy.coef=0.1  # or 0.5, 1.0
 
 ---
 
-## Troubleshooting
-
-### Common Issues
-
-**1. CUDA Out of Memory**
-```bash
-# Reduce GPU memory utilization
-rollout.gpu_memory_utilization=0.2
-
-# Enable gradient checkpointing (should already be on)
-actor.gradient_checkpointing=true
-
-# Reduce max length
-actor.max_length_per_device=6000
-```
-
-**2. SGLang Server Startup Issues**
-```bash
-# Check port availability
-rollout.base_port=30001  # Change if 30000 is occupied
-```
-
-**3. Dataset Download Failures**
-```bash
-# Manually download dataset
-huggingface-cli download openai/gsm8k
-
-# Or use local path
-train_data.path=/path/to/local/gsm8k
-```
-
-**4. Wandb Login Issues**
-```bash
-# Disable wandb if needed
-trainer.use_wandb=false
-```
-
----
-
-## Repository Structure
-
-```
-RL2/
-├── RL2/
-│   ├── trainer/
-│   │   ├── ppo.py           # Dr.GRPO baseline trainer
-│   │   ├── spo.py           # KL divergence trainer (Sections 3.1, 3.2)
-│   │   ├── spo_0p5.py       # Fixed target (0.5) trainer (Section 3.3)
-│   │   └── config/
-│   │       ├── ppo.yaml     # PPO/GRPO config
-│   │       └── spo.yaml     # SPO config
-│   ├── workers/
-│   │   ├── actor.py         # Model training logic with KL loss
-│   │   └── critic.py        # Value function (for GAE)
-│   ├── datasets/
-│   │   ├── base.py          # Dataset loading
-│   │   └── rl.py            # RL dataset wrapper
-│   └── utils/
-│       ├── algorithms.py    # Advantage computation (REINFORCE, GAE, SPO)
-│       └── functions.py     # Loss computation utilities
-├── envs/
-│   └── gsm8k.py             # GSM8K environment (answer extraction)
-├── examples/
-│   ├── gsm8k_reinforce.sh   # Baseline Dr.GRPO
-│   ├── gsm8k_0.sh           # Section 3.1 (batch normalized)
-│   └── gsm8k_0p5_0.sh       # Section 3.3 (fixed target)
-└── pyproject.toml           # Dependencies (uv-managed)
-```
-
----
-
 ## Citation
 
 If you use this code or reproduce the experiments, please cite:
 
 ```bibtex
 @thesis{Byun2025ExploringPaths,
-    author = {변준수 (Junsoo Byun)},
+    author = {Junsoo Byun},
     title = {Exploring Paths in Probabilistic Graphs for Model Training},
     school = {Seoul National University},
     year = {2025},
@@ -520,7 +430,7 @@ For the RL2 library:
 
 ## Acknowledgments
 
-This research was conducted under the supervision of Professor 송현오 at Seoul National University's Mechanical Engineering Department. The implementation is built upon the RL2 library developed by Chenmien Tan and collaborators.
+The implementation is built upon the RL2 library developed by Chenmien Tan and collaborators.
 
 **Key Dependencies:**
 - [RL2](https://github.com/ChenmienTan/RL2): Post-training library for LLMs
@@ -539,9 +449,8 @@ This project inherits the license from the RL2 library. Please refer to the [ori
 ## Contact
 
 For questions about the paper or reproduction:
-- **Author:** 변준수 (Junsoo Byun)
-- **Institution:** Seoul National University, Mechanical Engineering
-- **Advisor:** 송현오 교수
+- **Author:** Junsoo Byun (jsbyun121@snu.ac.kr)
+- **Institution:** Seoul National University
 
 For questions about the RL2 library:
 - See the [RL2 repository](https://github.com/ChenmienTan/RL2)
