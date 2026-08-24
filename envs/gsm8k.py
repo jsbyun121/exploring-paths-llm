@@ -1,4 +1,11 @@
+import logging
 import re
+
+from math_verify import parse, verify
+
+
+logging.getLogger("math_verify.parser").disabled = True
+logging.getLogger("math_verify.grader").disabled = True
 
 async def step(state, action, extra_info):
 
@@ -22,8 +29,10 @@ async def step(state, action, extra_info):
         return env_response
     answer = match.group(1).strip()
 
-    # Check if the extracted answer matches the expected answer
-    if extra_info["answer"].strip() == answer or extra_info["answer"].strip() in answer:
+    # Exact symbolic/numeric verification.  The previous substring check
+    # incorrectly accepted cases such as ground truth "12" and prediction
+    # "312", which can create a spurious positive-only training signal.
+    if verify(parse(extra_info["answer"].strip()), parse(answer)):
         env_response["reward"] = 1.0
         env_response["score"] = 1.0
 

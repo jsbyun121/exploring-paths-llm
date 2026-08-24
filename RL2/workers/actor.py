@@ -11,6 +11,7 @@ from RL2.utils.functions import (
     aggregate_values
 )
 from RL2.utils.algorithms import compute_approx_kl
+from RL2.utils.path_losses import compute_path_loss
 from RL2.utils.offloading import model_offloading_manager
 from RL2.utils.checkpointing import get_state_dict
 from RL2.utils.logging import (
@@ -44,6 +45,20 @@ class Actor(Worker):
 
         self.prepare_model_optimizer()
 
+    def compute_entropy(self, logits, logsumexp):
+        """Compute entropy with gradients only when it affects the loss.
+
+        Entropy is always reported as a metric, but most control runs use an
+        exact zero entropy coefficient. Keeping that metric in the autograd
+        graph retains a full-vocabulary probability tensor and makes backward
+        traverse a mathematically zero-valued branch.
+        """
+
+        if self.config.entropy.coef != 0:
+            return compute_entropy(logits, logsumexp, self.device_mesh["tp"])
+        with torch.no_grad():
+            return compute_entropy(logits, logsumexp, self.device_mesh["tp"])
+
     @sequence_parallelism_manager
     def forward_original(self, minibatch, return_entropy=False):
 
@@ -66,9 +81,9 @@ class Actor(Worker):
         logps = (action_logits - logsumexp) * minibatch["action_mask"]
         
         if return_entropy:
-            entropy = compute_entropy(
-                logits, logsumexp, self.device_mesh["tp"]
-            ) * minibatch["action_mask"]
+            entropy = self.compute_entropy(logits, logsumexp) * minibatch[
+                "action_mask"
+            ]
             return logps, entropy
         else:
             return logps
@@ -124,11 +139,47 @@ class Actor(Worker):
 
         entropy = None
         if return_entropy:
-            entropy = compute_entropy(
-                logits, logsumexp, self.device_mesh["tp"]
-            ) * minibatch["action_mask"]
+            entropy = self.compute_entropy(logits, logsumexp) * minibatch[
+                "action_mask"
+            ]
             
         return log1mp, logps, max_logps, max_log1mp, entropy
+
+    @sequence_parallelism_manager
+    def forward_path(self, minibatch):
+        """Compute a configured successful-path objective without logit clones."""
+
+        logits = self.model(
+            input_ids=minibatch["states"],
+            position_ids=minibatch["position_ids"],
+            use_cache=False,
+        ).logits.to(torch.float32) / getattr(self.config, "temperature", 1.0)
+
+        logsumexp = compute_logsumexp(logits, self.device_mesh["tp"])
+        action_logits = gather_action_logits(
+            logits, minibatch["actions"], self.device_mesh["tp"]
+        )
+        action_logps = action_logits - logsumexp
+        max_logits = logits.max(dim=-1).values
+        max_logps = max_logits - logsumexp
+        entropy = self.compute_entropy(logits, logsumexp)
+
+        losses, ranks, in_cap = compute_path_loss(
+            self.config.path.objective,
+            logits=logits,
+            logsumexp=logsumexp,
+            actions=minibatch["actions"],
+            action_logps=action_logps,
+            max_logps=max_logps,
+            rank_cap=self.config.path.rank_cap,
+        )
+        mask = minibatch["action_mask"]
+        return (
+            losses * mask,
+            entropy * mask,
+            ranks * mask,
+            in_cap.to(mask.dtype) * mask,
+        )
 
     @time_logger("compute_logps")
     @model_offloading_manager
@@ -217,7 +268,8 @@ class Actor(Worker):
                     total_actions,
                     total_sequences
                 )
-                loss = loss - self.config.entropy.coef * entropy
+                if self.config.entropy.coef != 0:
+                    loss = loss - self.config.entropy.coef * entropy
                 if self.config.kl.coef > 0 and self.config.kl.type == "loss":
                     kl_loss = compute_approx_kl(
                         logps,
@@ -472,4 +524,162 @@ class Actor(Worker):
 
         rank0_log(metrics, step)
 
+        self.state_dict = get_state_dict(self)
+
+    @time_logger("update_actor")
+    @model_offloading_manager
+    @data_manager(pack_minibatches=True)
+    def update_path(self, batches, step: int):
+        """Optimize successful sequences with the configured path objective."""
+
+        if step < self.config.freeze_steps:
+            self.state_dict = get_state_dict(self)
+            return
+        if self.config.kl.coef > 0:
+            raise NotImplementedError(
+                "Reference-policy KL is not implemented for path objectives."
+            )
+
+        self.model.train()
+        tbar = progress_bar(
+            total=sum(len(batch) for batch in batches), desc="Update actor"
+        )
+        metrics = defaultdict(list)
+        eps = torch.finfo(torch.float32).eps
+
+        for batch in batches:
+            _, total_sequences = count_total(
+                batch, ("action_mask", "eos_mask"), self.device_mesh["dp"]
+            )
+            metric = defaultdict(list)
+            total_correct_sequences = 0
+            total_correct_tokens = 0
+            total_selected_tokens = 0
+            total_rank1_tokens = 0
+            total_in_cap_tokens = 0
+            total_rank_sum = 0.0
+            total_rank_count = 0
+            total_entropy_all_sum = 0.0
+            total_entropy_all_sequences = 0
+
+            for minibatch in batch:
+                losses, entropy, ranks, in_cap = self.forward_path(minibatch)
+                action_mask = minibatch["action_mask"].bool()
+                correct_mask = minibatch["advantages"].sum(-1) > 0
+                num_correct = int(correct_mask.sum().item())
+                per_seq_entropy_all = entropy.sum(-1) / (
+                    minibatch["action_mask"].sum(-1) + eps
+                )
+                valid_sequences = minibatch["eos_mask"].sum(-1) > 0
+                total_entropy_all_sum += (
+                    per_seq_entropy_all[valid_sequences].detach().sum().item()
+                )
+                total_entropy_all_sequences += int(valid_sequences.sum().item())
+
+                if num_correct > 0:
+                    correct_token_mask = action_mask & correct_mask.unsqueeze(-1)
+                    selected_token_mask = correct_token_mask
+
+                    entropy_quantile = self.config.path.token_entropy_quantile
+                    if entropy_quantile > 0:
+                        threshold = torch.quantile(
+                            entropy[correct_token_mask].detach().to(torch.float32),
+                            entropy_quantile,
+                        )
+                        selected_token_mask = correct_token_mask & (
+                            entropy.detach() >= threshold
+                        )
+                        losses = losses * selected_token_mask
+
+                    if self.config.tis_coef > 0:
+                        tis = torch.exp(
+                            minibatch.get("old_logps", minibatch["llm_logps"])
+                            - minibatch["llm_logps"]
+                        ).clamp(max=self.config.tis_coef)
+                        losses = losses * tis
+
+                    token_denominator = (
+                        selected_token_mask.sum(-1)
+                        if self.config.path.normalize_selected_tokens
+                        else minibatch["action_mask"].sum(-1)
+                    )
+                    per_seq_loss = losses.sum(-1) / (token_denominator + eps)
+                    per_seq_entropy = entropy.sum(-1) / (
+                        minibatch["action_mask"].sum(-1) + eps
+                    )
+
+                    minibatch_loss_sum = per_seq_loss[correct_mask].sum()
+                    minibatch_entropy_sum = per_seq_entropy[correct_mask].sum()
+                    final_loss = (
+                        minibatch_loss_sum
+                        - self.config.entropy.coef * minibatch_entropy_sum
+                    )
+                    self.backward(final_loss)
+
+                    metric["actor/loss_sum"].append(minibatch_loss_sum.item())
+                    metric["actor/entropy_sum"].append(
+                        minibatch_entropy_sum.item()
+                    )
+                    total_correct_sequences += num_correct
+
+                    correct_tokens = int(correct_token_mask.sum().item())
+                    selected_tokens = int(selected_token_mask.sum().item())
+                    total_correct_tokens += correct_tokens
+                    total_selected_tokens += selected_tokens
+                    if self.config.path.objective == "rank_jsd":
+                        rank1 = correct_token_mask & ranks.eq(1)
+                        covered = correct_token_mask & in_cap.bool()
+                        promoted = covered & ranks.gt(1)
+                        total_rank1_tokens += int(rank1.sum().item())
+                        total_in_cap_tokens += int(covered.sum().item())
+                        total_rank_sum += ranks[promoted].sum().item()
+                        total_rank_count += int(promoted.sum().item())
+
+                tbar.update()
+
+            if total_correct_sequences > 0:
+                for param in self.model.parameters():
+                    if param.grad is not None:
+                        param.grad /= total_correct_sequences
+
+                metric["actor/loss"] = [
+                    sum(metric.pop("actor/loss_sum"))
+                    / total_correct_sequences
+                ]
+                metric["actor/entropy"] = [
+                    sum(metric.pop("actor/entropy_sum"))
+                    / total_correct_sequences
+                ]
+            else:
+                metric["actor/loss"] = [0.0]
+                metric["actor/entropy"] = [0.0]
+
+            metric["path/correct_sequence_fraction"] = [
+                total_correct_sequences / max(total_sequences, 1)
+            ]
+            metric["path/selected_token_fraction"] = [
+                total_selected_tokens / max(total_correct_tokens, 1)
+            ]
+            metric["actor/entropy_all"] = [
+                total_entropy_all_sum / max(total_entropy_all_sequences, 1)
+            ]
+            if self.config.path.objective == "rank_jsd":
+                metric["path/rank1_fraction"] = [
+                    total_rank1_tokens / max(total_correct_tokens, 1)
+                ]
+                metric["path/rank_cap_coverage"] = [
+                    total_in_cap_tokens / max(total_correct_tokens, 1)
+                ]
+                metric["path/promoted_mean_rank"] = [
+                    total_rank_sum / max(total_rank_count, 1)
+                ]
+
+            grad_norm = self.optimizer_step()
+            for key, values in metric.items():
+                metrics[key].append(
+                    gather_and_reduce(values, self.device_mesh["dp"])
+                )
+            metrics["actor/grad_norm"].append(grad_norm)
+
+        rank0_log(metrics, step)
         self.state_dict = get_state_dict(self)

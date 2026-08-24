@@ -87,10 +87,14 @@ class PPOTrainer(Trainer):
         step = load_ckpt(
             self, (self.actor, self.critic, self.rollout)
         )
+        max_steps = self.config.trainer.max_steps
+        stop = max_steps is not None and step >= max_steps
         for epoch in range(
             step // len(self.train_dataloader),
             self.config.trainer.n_epochs
         ):
+            if stop:
+                break
             for data_list in tqdm(
                 self.train_dataloader,
                 desc=f"Epoch {epoch + 1}",
@@ -124,6 +128,10 @@ class PPOTrainer(Trainer):
                 if self.config.trainer.test_freq is not None and step % self.config.trainer.test_freq == 0:
                     for data_list in self.test_dataloader:
                         self.rollout(data_list, False, step)
+
+                if max_steps is not None and step >= max_steps:
+                    stop = True
+                    break
 
         save_model(self, self.actor)
 

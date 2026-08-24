@@ -1,4 +1,5 @@
 import glob
+import os
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
@@ -59,7 +60,13 @@ def load_ckpt(trainer, workers):
         return 0
 
     if checkpoint_id == "latest":
-        save_dirs = glob.glob(f"{trainer.config.trainer.save_dir}/step*")
+        # A failed write can leave a large step directory without DCP's
+        # completion metadata. Never select such a partial checkpoint merely
+        # because it has the highest step number.
+        metadata_files = glob.glob(
+            f"{trainer.config.trainer.save_dir}/step*/.metadata"
+        )
+        save_dirs = [os.path.dirname(path) for path in metadata_files]
         if not save_dirs:
             return 0
         checkpoint_id = max(

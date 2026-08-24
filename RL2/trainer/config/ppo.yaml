@@ -101,10 +101,11 @@ adv:
 trainer:
   project: null
   experiment_name: null
+  seed: 0
   load_ckpt_from: null
   n_epochs: 1
+  max_steps: null
   test_freq: null
   save_dir: /storage/junsoo/ppo/${trainer.experiment_name}
   save_freq: null
   use_wandb: true
-  

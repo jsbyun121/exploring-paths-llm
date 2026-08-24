@@ -1,5 +1,7 @@
 from omegaconf import OmegaConf
+import random
 import torch.distributed as dist
+import torch
 from transformers import get_scheduler
 import wandb
 
@@ -9,6 +11,12 @@ class Trainer:
         
         OmegaConf.resolve(config)
         self.config = config
+
+        seed = int(getattr(config.trainer, "seed", 0)) + dist.get_rank()
+        random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
         if dist.get_rank() == 0:
             print(OmegaConf.to_yaml(config))
@@ -23,7 +31,13 @@ class Trainer:
     
     def prepare_scheduler(self, worker):
 
-        num_training_steps = self.config.trainer.n_epochs * len(self.train_dataloader) * getattr(
+        configured_max_steps = getattr(self.config.trainer, "max_steps", None)
+        rollout_steps = (
+            configured_max_steps
+            if configured_max_steps is not None
+            else self.config.trainer.n_epochs * len(self.train_dataloader)
+        )
+        num_training_steps = rollout_steps * getattr(
             worker.config, "update_per_rollout", 1
         )
         num_warmup_steps = int(worker.config.warmup_ratio * num_training_steps)

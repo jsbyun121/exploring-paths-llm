@@ -7,7 +7,6 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 from sglang.srt.entrypoints.engine import Engine
-from sglang.srt.patch_torch import monkey_patch_torch_reductions
 from sglang.srt.utils import MultiprocessingSerializer
 from sglang.srt.model_executor.model_runner import LocalSerializedTensor
 from tqdm.asyncio import tqdm
@@ -44,6 +43,14 @@ class Rollout(Worker):
                 config.test_sampling_params
             )
 
+            # Python 3.12 no longer creates an event loop implicitly, and
+            # uvloop deliberately raises from asyncio.get_event_loop() when
+            # none has been installed.  Keep one loop for the lifetime of the
+            # rollout worker so SGLang's async objects are always driven by
+            # the same loop across alternating train/test rollouts.
+            self.event_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.event_loop)
+
         dist.barrier()
 
     def prepare_device_mesh(self):
@@ -62,7 +69,6 @@ class Rollout(Worker):
 
         if "TORCHELASTIC_USE_AGENT_STORE" in os.environ.keys():
             del os.environ["TORCHELASTIC_USE_AGENT_STORE"]
-        monkey_patch_torch_reductions()
         cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
         if cuda_visible_devices:
             cuda_visible_devices = cuda_visible_devices.split(",")
@@ -176,8 +182,7 @@ class Rollout(Worker):
             data_list = split_and_scatter_list(
                 data_list, self.device_mesh["dp"]
             )
-            loop = asyncio.get_event_loop()
-            outputs = loop.run_until_complete(
+            outputs = self.event_loop.run_until_complete(
                 tqdm.gather(
                     *(self.rollout(ex, train) for ex in data_list),
                     desc="Rollout",
@@ -252,9 +257,16 @@ class Rollout(Worker):
             self.llm.resume_memory_occupation()
         
         for idx, (name, tensor) in enumerate(actor.state_dict.items()):
-            tensor = tensor.to(torch.cuda.current_device())
+            # get_state_dict(..., cpu_offload=True) already gives us CPU
+            # tensors. Moving them back to CUDA before serialization makes
+            # PyTorch use CUDA IPC; that path requires pidfd_getfd, which is
+            # commonly blocked by container seccomp profiles. Serialize CPU
+            # storage instead and let SGLang's _unwrap_tensor move it to the
+            # inference device after deserialization.
+            tensor = tensor.full_tensor() if isinstance(tensor, DTensor) else tensor
+            tensor = tensor.detach().to("cpu").contiguous()
             serialized_tensor = MultiprocessingSerializer.serialize(
-                tensor.full_tensor() if isinstance(tensor, DTensor) else tensor
+                tensor
             )
             serialized_tensors = [
                 None for _ in range(self.device_mesh["tp"].size())

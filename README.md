@@ -380,6 +380,10 @@ Adjust `rollout.gpu_memory_utilization` based on GPU memory (0.3 for single GPU,
 
 ## Proposed Future Work (Section 4.2-4.4)
 
+An updated literature review, viability assessment, corrected objectives, and
+single-A100 experiment launchers are available in
+[`experiments/RESEARCH_ASSESSMENT.md`](experiments/RESEARCH_ASSESSMENT.md).
+
 The paper proposes several improvements to address stability issues:
 
 ### 1. Entropy Regularization (Section 4.2)

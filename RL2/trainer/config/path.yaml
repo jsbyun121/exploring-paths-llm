@@ -1,0 +1,82 @@
+train_data:
+  path: null
+  prompts_per_rollout: 512
+  responses_per_prompt: 1
+
+test_data:
+  path: null
+  prompts_per_rollout: null
+  responses_per_prompt: 1
+
+actor:
+  model_name: null
+  use_liger_kernel: true
+  gradient_checkpointing: true
+  ddp_size: 1
+  tp_size: 1
+  sp_size: 1
+  max_length_per_device: 16384
+  max_inference_length_per_device: ${actor.max_length_per_device}
+  temperature: ${rollout.train_sampling_params.temperature}
+  update_per_rollout: 1
+  clip: 0.2
+  avg_level: sequence
+  lr: 1e-6
+  weight_decay: 1e-2
+  max_grad_norm: 1.0
+  tis_coef: 0.0
+  scheduler: constant
+  warmup_ratio: 0.1
+  freeze_steps: 0
+  offload_model: true
+  offload_optimizer: true
+
+  path:
+    objective: rank_jsd
+    rank_cap: 64
+    token_entropy_quantile: 0.0
+    normalize_selected_tokens: false
+
+  kl:
+    coef: 0.0
+    type: null
+    reward_estimator: k1
+    loss_estimator: k2
+
+  # Actor minimizes loss - coef * entropy. Positive values encourage entropy;
+  # negative values penalize it, matching Section 4.2's proposed +lambda*H.
+  entropy:
+    coef: 0.0
+
+rollout:
+  model_name: ${actor.model_name}
+  dtype: bfloat16
+  tp_size: 1
+  gpu_memory_utilization: 0.45
+  responses_per_prompt: ${train_data.responses_per_prompt}
+  train_sampling_params:
+    temperature: 1.0
+    max_new_tokens: 4096
+    stop: null
+    no_stop_trim: true
+  test_sampling_params:
+    temperature: 0.0
+    max_new_tokens: ${rollout.train_sampling_params.max_new_tokens}
+    stop: ${rollout.train_sampling_params.stop}
+    no_stop_trim: ${rollout.train_sampling_params.no_stop_trim}
+  max_turns: 1
+  env_path: null
+  dynamic_filtering: false
+  base_port: 30000
+
+trainer:
+  project: Exploring-Paths-Completion
+  experiment_name: null
+  seed: 0
+  load_ckpt_from: null
+  n_epochs: 1000
+  max_steps: 150
+  test_freq: 25
+  save_dir: outputs/${trainer.experiment_name}
+  save_freq: 50
+  use_wandb: true
