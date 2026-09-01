@@ -5,16 +5,31 @@ import torch
 import torch.distributed as dist
 import transformers
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-from transformers.modeling_flash_attention_utils import (
-    is_flash_attn_greater_or_equal_2_10
-)
-from ring_flash_attn.llama3_flash_attn_varlen import (
-    llama3_flash_attn_varlen_func,
-    llama3_flash_attn_prepare_cu_seqlens
-)
-from ring_flash_attn.adapters.hf_adapter import flash_attention_forward
 
 DATA_PARAMS: Dict[str, Any] = {}
+llama3_flash_attn_varlen_func = None
+llama3_flash_attn_prepare_cu_seqlens = None
+
+
+def _enable_ring_flash_attention():
+    """Load and register the FA2 ring backend only when SP is active."""
+    global llama3_flash_attn_varlen_func
+    global llama3_flash_attn_prepare_cu_seqlens
+    if llama3_flash_attn_varlen_func is not None:
+        return
+
+    from ring_flash_attn.llama3_flash_attn_varlen import (
+        llama3_flash_attn_varlen_func as varlen_func,
+        llama3_flash_attn_prepare_cu_seqlens as prepare_cu_seqlens,
+    )
+    from ring_flash_attn.adapters.hf_adapter import flash_attention_forward
+
+    llama3_flash_attn_varlen_func = varlen_func
+    llama3_flash_attn_prepare_cu_seqlens = prepare_cu_seqlens
+    transformers.modeling_flash_attention_utils._flash_attention_forward = (
+        _flash_attention_forward
+    )
+    ALL_ATTENTION_FUNCTIONS["flash_attention_2"] = flash_attention_forward
 
 def _flash_attention_forward(
     query_states: torch.Tensor,
@@ -48,11 +63,10 @@ def _flash_attention_forward(
         else {}
     )
 
-    if is_flash_attn_greater_or_equal_2_10:
-        if deterministic is None:
-            deterministic = (
-                os.environ.get("FLASH_ATTENTION_DETERMINISTIC", "0") == "1"
-            )
+    if deterministic is None:
+        deterministic = (
+            os.environ.get("FLASH_ATTENTION_DETERMINISTIC", "0") == "1"
+        )
 
     flash_kwargs["deterministic"] = deterministic
     flash_kwargs["group"] = DATA_PARAMS["group"]
@@ -73,15 +87,16 @@ def _flash_attention_forward(
         **flash_kwargs
     )
 
-transformers.modeling_flash_attention_utils._flash_attention_forward = _flash_attention_forward
-ALL_ATTENTION_FUNCTIONS["flash_attention_2"] = flash_attention_forward
-
 def sequence_parallelism_manager(func):
 
     @functools.wraps(func)
     def forward_with_sequence_parallelism(
         worker, minibatch, *args, **kwargs
     ):
+        if worker.device_mesh["sp"].size() == 1:
+            return func(worker, minibatch, *args, **kwargs)
+
+        _enable_ring_flash_attention()
         shape = minibatch["states"].shape
         seq_lens = minibatch["eos_mask"].argmax(-1) + 1
         minibatch = {
