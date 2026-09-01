@@ -14,13 +14,20 @@ def prepare_dp_model(model, device_mesh):
             if module.__class__.__name__ == name:
                 return module.__class__
 
-    transformer_layer_cls = {
-        get_module_cls_from_name(name)
-        for name in model._no_split_modules
-    }
-    auto_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls=transformer_layer_cls
+    transformer_layer_cls = set()
+    for layer in getattr(model, "_no_split_modules", ()):
+        layer_cls = layer if isinstance(layer, type) else get_module_cls_from_name(layer)
+        # Multimodal checkpoints can advertise vision blocks even when
+        # AutoModelForCausalLM intentionally loaded only the text backbone.
+        if layer_cls is not None:
+            transformer_layer_cls.add(layer_cls)
+    auto_wrap_policy = (
+        functools.partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls=transformer_layer_cls,
+        )
+        if transformer_layer_cls
+        else None
     )
 
     mixed_precision = MixedPrecision(

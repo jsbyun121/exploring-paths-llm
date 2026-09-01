@@ -36,7 +36,9 @@ class FSDPActor(FSDPWorker):
             self.model = model_cls.from_pretrained(
                 config.model_name,
                 trust_remote_code=True,
-                attn_implementation="flash_attention_2"
+                attn_implementation=getattr(
+                    config, "attn_implementation", "flash_attention_2"
+                ),
             )
 
         self.prepare_model_optimizer()

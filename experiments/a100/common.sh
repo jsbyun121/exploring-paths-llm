@@ -5,6 +5,9 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
+fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONUNBUFFERED=1
@@ -14,6 +17,11 @@ export NVIDIA_TF32_OVERRIDE="${NVIDIA_TF32_OVERRIDE:-1}"
 export WANDB_MODE="${WANDB_MODE:-offline}"
 
 MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
+ENABLE_THINKING="${ENABLE_THINKING:-false}"
+USE_LIGER_KERNEL="${USE_LIGER_KERNEL:-true}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
+MAMBA_SCHEDULER_STRATEGY="${MAMBA_SCHEDULER_STRATEGY:-auto}"
+RELEASE_MEMORY_FOR_TRAINING="${RELEASE_MEMORY_FOR_TRAINING:-true}"
 # Keep the official test set untouched. The trainer's periodic "test" pass is
 # a deterministic 500-example validation slice from the original train split.
 TRAIN_DATA="${TRAIN_DATA:-train[500:]@openai/gsm8k:main}"
@@ -104,11 +112,14 @@ run_path() {
         "train_data.path='${TRAIN_DATA}'" \
         "train_data.prompts_per_rollout=${PROMPTS_PER_ROLLOUT}" \
         train_data.responses_per_prompt=1 \
+        "train_data.enable_thinking=${ENABLE_THINKING}" \
         "test_data.path='${TEST_DATA}'" \
         test_data.responses_per_prompt=1 \
         "actor.model_name=${MODEL}" \
-        actor.use_liger_kernel=true \
+        "actor.use_liger_kernel=${USE_LIGER_KERNEL}" \
+        "actor.attn_implementation=${ATTN_IMPLEMENTATION}" \
         "actor.max_length_per_device=${actor_token_budget}" \
+        "actor.max_inference_length_per_device=${actor_token_budget}" \
         actor.avg_level=sequence \
         "actor.path.objective=${objective}" \
         "actor.path.rank_cap=${RANK_CAP}" \
@@ -118,6 +129,8 @@ run_path() {
         "rollout.train_sampling_params.max_new_tokens=${MAX_NEW_TOKENS}" \
         rollout.train_sampling_params.temperature=1.0 \
         "rollout.gpu_memory_utilization=${ROLLOUT_GPU_FRACTION}" \
+        "rollout.mamba_scheduler_strategy=${MAMBA_SCHEDULER_STRATEGY}" \
+        "rollout.release_memory_for_training=${RELEASE_MEMORY_FOR_TRAINING}" \
         rollout.env_path=envs/gsm8k.py \
         "trainer.project=${PROJECT}" \
         "trainer.experiment_name=${name}" \
@@ -156,17 +169,23 @@ run_drgrpo() {
         "train_data.path='${TRAIN_DATA}'" \
         train_data.prompts_per_rollout=128 \
         train_data.responses_per_prompt=4 \
+        "train_data.enable_thinking=${ENABLE_THINKING}" \
         "test_data.path='${TEST_DATA}'" \
         test_data.responses_per_prompt=1 \
         "actor.model_name=${MODEL}" \
-        actor.use_liger_kernel=true \
+        "actor.use_liger_kernel=${USE_LIGER_KERNEL}" \
+        "actor.attn_implementation=${ATTN_IMPLEMENTATION}" \
         "actor.max_length_per_device=${ACTOR_TOKEN_BUDGET}" \
+        "actor.max_inference_length_per_device=${ACTOR_TOKEN_BUDGET}" \
+        "ref_actor.max_inference_length_per_device=${ACTOR_TOKEN_BUDGET}" \
         adv.estimator=reinforce \
         adv.global_norm=false \
         adv.norm_var=false \
         "rollout.train_sampling_params.max_new_tokens=${MAX_NEW_TOKENS}" \
         rollout.train_sampling_params.temperature=1.0 \
         "rollout.gpu_memory_utilization=${ROLLOUT_GPU_FRACTION}" \
+        "rollout.mamba_scheduler_strategy=${MAMBA_SCHEDULER_STRATEGY}" \
+        "rollout.release_memory_for_training=${RELEASE_MEMORY_FOR_TRAINING}" \
         rollout.env_path=envs/gsm8k.py \
         "trainer.project=${PROJECT}" \
         "trainer.experiment_name=${name}" \

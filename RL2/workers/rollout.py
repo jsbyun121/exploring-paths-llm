@@ -32,7 +32,12 @@ class Rollout(Worker):
                 dtype=config.dtype,
                 tp_size=self.device_mesh["tp"].size(),
                 mem_fraction_static=config.gpu_memory_utilization,
-                enable_memory_saver=True,
+                mamba_scheduler_strategy=getattr(
+                    config, "mamba_scheduler_strategy", "auto"
+                ),
+                enable_memory_saver=getattr(
+                    config, "release_memory_for_training", True
+                ),
                 port=config.base_port + dist.get_rank()
             )
         
@@ -43,12 +48,12 @@ class Rollout(Worker):
                 config.test_sampling_params
             )
 
-            # Python 3.12 no longer creates an event loop implicitly, and
-            # uvloop deliberately raises from asyncio.get_event_loop() when
-            # none has been installed.  Keep one loop for the lifetime of the
-            # rollout worker so SGLang's async objects are always driven by
-            # the same loop across alternating train/test rollouts.
-            self.event_loop = asyncio.new_event_loop()
+            # Engine owns the event loop used by its tokenizer-manager
+            # communicators. Generation and synchronous control operations
+            # (weight updates, cache flushes, sleep/wake) must share that loop;
+            # replacing it after Engine initialization can strand communicator
+            # tasks on a loop that is no longer being driven.
+            self.event_loop = self.llm.loop
             asyncio.set_event_loop(self.event_loop)
 
         dist.barrier()
@@ -191,7 +196,9 @@ class Rollout(Worker):
                     disable=(dist.get_rank() != 0)
                 )
             )
-            if train:
+            if train and getattr(
+                self.config, "release_memory_for_training", True
+            ):
                 # If test, llm will soon be called again. See `Trainer.train`.
                 self.llm.release_memory_occupation()
 
@@ -253,10 +260,16 @@ class Rollout(Worker):
         torch.cuda.empty_cache()
         dist.barrier()
         # or llm.resume_memory_occupation() may OOM
-        if self.device_mesh["tp"].get_local_rank() == 0:
+        if (
+            self.device_mesh["tp"].get_local_rank() == 0
+            and getattr(self.config, "release_memory_for_training", True)
+        ):
             self.llm.resume_memory_occupation()
         
-        for idx, (name, tensor) in enumerate(actor.state_dict.items()):
+        tp_size = self.device_mesh["tp"].size()
+        tp_rank = self.device_mesh["tp"].get_local_rank()
+        named_tensors = []
+        for name, tensor in actor.state_dict.items():
             # get_state_dict(..., cpu_offload=True) already gives us CPU
             # tensors. Moving them back to CUDA before serialization makes
             # PyTorch use CUDA IPC; that path requires pidfd_getfd, which is
@@ -265,24 +278,40 @@ class Rollout(Worker):
             # inference device after deserialization.
             tensor = tensor.full_tensor() if isinstance(tensor, DTensor) else tensor
             tensor = tensor.detach().to("cpu").contiguous()
+
+            # With TP=1, Engine can serialize the CPU tensor directly. Avoid
+            # wrapping an already-serialized storage descriptor inside a
+            # second serialized payload; rebuilding that nested descriptor can
+            # deadlock in restricted containers. LocalSerializedTensor is only
+            # needed to select among shards contributed by multiple TP ranks.
+            if tp_size == 1:
+                if tp_rank == 0:
+                    named_tensors.append((name, tensor))
+                continue
+
             serialized_tensor = MultiprocessingSerializer.serialize(
                 tensor
             )
             serialized_tensors = [
-                None for _ in range(self.device_mesh["tp"].size())
-            ] if self.device_mesh["tp"].get_local_rank() == 0 else None
+                None for _ in range(tp_size)
+            ] if tp_rank == 0 else None
             dist.gather_object(
                 serialized_tensor,
                 serialized_tensors,
                 group_dst=0,
                 group=self.device_mesh["tp"].get_group(),
             )
-            if self.device_mesh["tp"].get_local_rank() == 0:
-                self.llm.update_weights_from_tensor(
-                    named_tensors=[(
-                        name, LocalSerializedTensor(values=serialized_tensors)
-                    )],
-                    flush_cache=(idx == len(actor.state_dict) - 1)
+            if tp_rank == 0:
+                named_tensors.append(
+                    (name, LocalSerializedTensor(values=serialized_tensors))
                 )
+
+        if tp_rank == 0:
+            print(f"Updating rollout model with {len(named_tensors)} tensors...")
+            self.llm.update_weights_from_tensor(
+                named_tensors=named_tensors,
+                flush_cache=True,
+            )
+            print("Rollout model weights updated.")
         actor.state_dict.clear()
         dist.barrier()

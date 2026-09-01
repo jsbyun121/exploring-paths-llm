@@ -5,6 +5,19 @@ import re
 
 class RLDataset(BaseDataset):
 
+    def apply_chat_template(self, messages, add_generation_prompt):
+        """Render prompts with optional model-specific template settings."""
+
+        template_kwargs = {}
+        if getattr(self.config, "enable_thinking", False):
+            template_kwargs["enable_thinking"] = True
+        return self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=add_generation_prompt,
+            tokenize=False,
+            **template_kwargs,
+        )
+
     def __getitem__(self, idx):
 
         ex = self.dataset[idx]
@@ -17,10 +30,9 @@ class RLDataset(BaseDataset):
         if "prompt" in ex.keys():
             data["prompt"] = ex["prompt"]
         elif "messages" in ex.keys():
-            data["prompt"] = self.tokenizer.apply_chat_template(
+            data["prompt"] = self.apply_chat_template(
                 ex["messages"],
                 add_generation_prompt=True,
-                tokenize=False
             )
         elif "question" in ex.keys():
             # GSM8K format - add instruction about answer format
@@ -28,10 +40,9 @@ class RLDataset(BaseDataset):
                 f"{ex['question']}\n\n"
                 "Solve this step by step. Write your final numerical answer after #### on a new line."
             )
-            data["prompt"] = self.tokenizer.apply_chat_template(
+            data["prompt"] = self.apply_chat_template(
                 [{"role": "user", "content": question_with_instruction}],
                 add_generation_prompt=True,
-                tokenize=False
             )
             data["extra_info"]["answer"] = re.search(r"####(.*)", ex["answer"]).group(1).strip()
 

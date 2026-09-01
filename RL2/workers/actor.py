@@ -38,9 +38,11 @@ class Actor(Worker):
 
         self.model = model_cls.from_pretrained(
             config.model_name,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             trust_remote_code=True,
-            attn_implementation="flash_attention_2"
+            attn_implementation=getattr(
+                config, "attn_implementation", "flash_attention_2"
+            ),
         )
 
         self.prepare_model_optimizer()

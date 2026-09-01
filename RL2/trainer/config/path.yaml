@@ -2,15 +2,18 @@ train_data:
   path: null
   prompts_per_rollout: 512
   responses_per_prompt: 1
+  enable_thinking: false
 
 test_data:
   path: null
   prompts_per_rollout: null
   responses_per_prompt: 1
+  enable_thinking: ${train_data.enable_thinking}
 
 actor:
   model_name: null
   use_liger_kernel: true
+  attn_implementation: flash_attention_2
   gradient_checkpointing: true
   ddp_size: 1
   tp_size: 1
@@ -53,6 +56,8 @@ rollout:
   dtype: bfloat16
   tp_size: 1
   gpu_memory_utilization: 0.45
+  mamba_scheduler_strategy: auto
+  release_memory_for_training: true
   responses_per_prompt: ${train_data.responses_per_prompt}
   train_sampling_params:
     temperature: 1.0
