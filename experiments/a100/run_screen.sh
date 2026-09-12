@@ -5,7 +5,7 @@ set -Eeuo pipefail
 source "$(dirname "$0")/common.sh"
 
 SEED="${SEED:-0}"
-METHODS="${METHODS:-drgrpo positive_ce bernoulli_kl_legacy bernoulli_kl_detached fixed_half_legacy fixed_half rank_jsd rank_jsd_entropy}"
+METHODS="${METHODS:-positive_ce rank_jsd}"
 
 for method in ${METHODS}; do
     case "${method}" in
@@ -15,7 +15,7 @@ for method in ${METHODS}; do
         rank_jsd_entropy)
             run_path rank_jsd "${RANK_ENTROPY_COEF:--0.03}" "${SEED}"
             ;;
-        positive_ce|bernoulli_kl_legacy|bernoulli_kl_detached|fixed_half_legacy|fixed_half|rank_jsd)
+        positive_ce|bernoulli_kl_legacy|bernoulli_kl_detached|fixed_half_legacy|fixed_half|rank_jsd|rank_kl)
             run_path "${method}" 0.0 "${SEED}"
             ;;
         *)

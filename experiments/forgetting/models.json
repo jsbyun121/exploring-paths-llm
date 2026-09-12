@@ -1,0 +1,91 @@
+{
+  "schema": "catastrophic-forgetting-models/v1",
+  "models": [
+    {
+      "id": "base",
+      "family": "base",
+      "training_step": 0,
+      "generated_tokens": 0,
+      "rollout_responses": 0,
+      "model": "Qwen/Qwen3-4B-Thinking-2507",
+      "artifact_step": 0
+    },
+    {
+      "id": "jsd_step100",
+      "family": "jsd",
+      "training_step": 100,
+      "generated_tokens": null,
+      "rollout_responses": 51200,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/jsd_step100/best",
+      "artifact_step": 100
+    },
+    {
+      "id": "jsd_step120",
+      "family": "jsd",
+      "training_step": 120,
+      "generated_tokens": null,
+      "post_step100_generated_tokens": 14682799,
+      "rollout_responses": 61440,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/jsd_step120/best",
+      "artifact_step": 120
+    },
+    {
+      "id": "jsd_step180",
+      "family": "jsd",
+      "training_step": 180,
+      "generated_tokens": null,
+      "post_step100_generated_tokens": 59869366,
+      "rollout_responses": 92160,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/jsd_step180/best",
+      "artifact_step": 180
+    },
+    {
+      "id": "jsd_step220_recovery",
+      "family": "jsd",
+      "training_step": 220,
+      "generated_tokens": null,
+      "post_step100_generated_tokens": 101485093,
+      "rollout_responses": 112640,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/jsd_step220/best",
+      "artifact_step": 220,
+      "requires_recovery_export": true,
+      "forbidden_substitute": "The best/ directory in the step220 backup contains step180 weights and must not be used for this entry."
+    },
+    {
+      "id": "dr_grpo_step100",
+      "family": "dr_grpo",
+      "training_step": 100,
+      "generated_tokens": null,
+      "rollout_responses": 51200,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/dr_grpo_step100/best",
+      "artifact_step": 100
+    },
+    {
+      "id": "dr_grpo_step120",
+      "family": "dr_grpo",
+      "training_step": 120,
+      "generated_tokens": null,
+      "rollout_responses": 61440,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/dr_grpo_step120/best",
+      "artifact_step": 120
+    },
+    {
+      "id": "dr_grpo_step180",
+      "family": "dr_grpo",
+      "training_step": 180,
+      "generated_tokens": null,
+      "rollout_responses": 92160,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/dr_grpo_step180/best",
+      "artifact_step": 180
+    },
+    {
+      "id": "dr_grpo_step220",
+      "family": "dr_grpo",
+      "training_step": 220,
+      "generated_tokens": null,
+      "rollout_responses": 112640,
+      "model": "/workspace/repos/exploring-paths-llm/outputs/forgetting/models/dr_grpo_step220/best",
+      "artifact_step": 220
+    }
+  ]
+}

@@ -96,6 +96,9 @@ def aggregate_values(
             )
             for t in tensor
         )
+    # Boolean clip indicators also use sequence averaging.
+    if not tensor.is_floating_point():
+        tensor = tensor.float()
     if advantages is not None:
         # Mask for sequences with positive total advantage
         correct_path = advantages.sum(-1) > 0

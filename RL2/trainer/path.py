@@ -1,6 +1,7 @@
 """Trainer for positive-only token objectives on verified trajectories."""
 
 import hydra
+import wandb
 import torch.distributed as dist
 from tqdm import tqdm
 
@@ -17,6 +18,7 @@ class PathTrainer(Trainer):
 
     def __init__(self, config):
         super().__init__(config)
+        self.enable_graceful_stop()
         self.actor = Actor(config.actor, True)
         self.train_dataloader = self.get_dataloader(True)
         self.test_dataloader = self.get_dataloader(False)
@@ -43,6 +45,11 @@ class PathTrainer(Trainer):
         step = load_ckpt(self, (self.actor, None, self.rollout))
         max_steps = self.config.trainer.max_steps
         stop = max_steps is not None and step >= max_steps
+        if stop and self.config.trainer.test_freq is not None:
+            # A crash after the final checkpoint but before validation must not
+            # turn a resumed run into an unvalidated completed model.
+            for test_data_list in self.test_dataloader:
+                self.rollout(test_data_list, False, step)
 
         for epoch in range(
             step // len(self.train_dataloader), self.config.trainer.n_epochs
@@ -62,7 +69,14 @@ class PathTrainer(Trainer):
                     self.compute_advantages(tensor_dict, cu_seqs, step)
 
                 self.actor.update_path(tensor_dict, step)
-                save_ckpt(self, (self.actor, None), step)
+                interrupted = self.should_stop()
+                final_step = max_steps is not None and step >= max_steps
+                save_ckpt(self, (self.actor, None), step, force=interrupted or final_step)
+                if interrupted:
+                    # A partial run must not write latest/config.json and look complete.
+                    if dist.get_rank() == 0 and self.config.trainer.use_wandb:
+                        wandb.summary["termination_reason"] = "paused_at_checkpoint"
+                    return
                 self.rollout.update(self.actor, step)
 
                 test_freq = self.config.trainer.test_freq
@@ -74,15 +88,27 @@ class PathTrainer(Trainer):
                     stop = True
                     break
 
-        save_model(self, self.actor)
+        self.completed_step = step
+        if getattr(self.config.trainer, "save_final_model", True):
+            save_model(self, self.actor)
 
 
 @hydra.main(config_path="config", config_name="path", version_base=None)
 def main(config):
     initialize_global_process_group()
     trainer = PathTrainer(config)
-    trainer.train()
-    dist.destroy_process_group()
+    try:
+        trainer.train()
+        if config.trainer.use_wandb:
+            wandb.finish()
+    finally:
+        if config.trainer.use_wandb:
+            # SGLang shutdown terminates child processes; close W&B's service
+            # first so it is not killed before its atexit teardown.
+            wandb.teardown()
+        if trainer.rollout.device_mesh["tp"].get_local_rank() == 0:
+            trainer.rollout.llm.shutdown()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

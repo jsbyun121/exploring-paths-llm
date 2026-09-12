@@ -19,6 +19,7 @@ class PPOTrainer(Trainer):
 
     def __init__(self, config):
         super().__init__(config)
+        self.enable_graceful_stop()
 
         self.actor = Actor(config.actor, True)
         self.train_dataloader = self.get_dataloader(True)
@@ -105,7 +106,8 @@ class PPOTrainer(Trainer):
 
                 tensor_dict, cu_seqs = self.rollout(data_list, True, step)
 
-                if self.config.actor.kl.coef > 0 or self.config.actor.update_per_rollout > 1:
+                if (self.config.actor.kl.coef > 0 or self.config.actor.update_per_rollout > 1
+                        or getattr(self.config.actor, "policy_loss", "ppo") != "ppo"):
                     tensor_dict = self.actor.compute_logps(tensor_dict, step)
                 if self.config.actor.kl.coef > 0:
                     tensor_dict = self.ref_actor.compute_logps(tensor_dict, step)
@@ -121,8 +123,14 @@ class PPOTrainer(Trainer):
                 if self.config.adv.estimator == "gae":
                     self.critic.update(tensor_dict, step)
                 save_ckpt(
-                    self, (self.actor, self.critic), step
+                    self, (self.actor, self.critic), step,
+                    force=self.stop_requested or (max_steps is not None and step >= max_steps)
                 )
+                if self.should_stop():
+                    save_ckpt(self, (self.actor, self.critic), step, force=True)
+                    if dist.get_rank() == 0 and self.config.trainer.use_wandb:
+                        wandb.summary["termination_reason"] = "paused_at_checkpoint"
+                    return
 
                 self.rollout.update(self.actor, step)
                 if self.config.trainer.test_freq is not None and step % self.config.trainer.test_freq == 0:
@@ -133,6 +141,7 @@ class PPOTrainer(Trainer):
                     stop = True
                     break
 
+        self.completed_step = step
         save_model(self, self.actor)
 
 
@@ -142,9 +151,16 @@ def main(config):
     initialize_global_process_group()
     
     trainer = PPOTrainer(config)
-    trainer.train()
-
-    dist.destroy_process_group()
+    try:
+        trainer.train()
+        if config.trainer.use_wandb:
+            wandb.finish()
+    finally:
+        if config.trainer.use_wandb:
+            wandb.teardown()
+        if trainer.rollout.device_mesh["tp"].get_local_rank() == 0:
+            trainer.rollout.llm.shutdown()
+        dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()

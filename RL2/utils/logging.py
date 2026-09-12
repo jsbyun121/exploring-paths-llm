@@ -48,6 +48,8 @@ def gather_and_log(metrics, device_mesh, step, metrics_to_sum=["loss"]):
             f"{k}: {v:.3g}" for k, v in metrics.items()
         ]))
         wandb.log(metrics, step=step)
+        return metrics
+    return None
 
 def gather_and_reduce(lst, device_mesh):
 

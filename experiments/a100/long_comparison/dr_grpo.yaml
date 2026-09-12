@@ -1,0 +1,119 @@
+train_data:
+  path: train[500:]@openai/gsm8k:main
+  prompts_per_rollout: 64
+  responses_per_prompt: 8
+  enable_thinking: false
+test_data:
+  path: train[:500]@openai/gsm8k:main
+  prompts_per_rollout: null
+  responses_per_prompt: 1
+  enable_thinking: false
+actor:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  use_liger_kernel: true
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+  ddp_size: 1
+  tp_size: 1
+  sp_size: 1
+  max_length_per_device: 6144
+  max_inference_length_per_device: 6144
+  temperature: 1.0
+  update_per_rollout: 4
+  clip: 0.2
+  avg_level: sequence
+  lr: 1.0e-06
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  tis_coef: 0
+  scheduler: constant
+  warmup_ratio: 0.1
+  freeze_steps: 0
+  offload_model: true
+  offload_optimizer: true
+  kl:
+    coef: 0.0
+    type: null
+    reward_estimator: k1
+    loss_estimator: k2
+  entropy:
+    coef: 0.0
+  adam_betas:
+  - 0.9
+  - 0.999
+  policy_loss: dr_grpo
+  max_completion_length: 4096
+  sapo_tau_pos: 1.0
+  sapo_tau_neg: 1.05
+  optimized_batching: true
+rollout:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  dtype: bfloat16
+  tp_size: 1
+  gpu_memory_utilization: 0.3
+  mamba_scheduler_strategy: auto
+  release_memory_for_training: true
+  sampling_seed_base: 0
+  responses_per_prompt: 8
+  train_sampling_params:
+    temperature: 1.0
+    max_new_tokens: 4096
+    stop: null
+    no_stop_trim: true
+  test_sampling_params:
+    temperature: 0.0
+    max_new_tokens: 4096
+    stop: null
+    no_stop_trim: true
+  max_turns: 1
+  env_path: envs/gsm8k.py
+  dynamic_filtering: false
+  base_port: 30000
+ref_actor:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  use_liger_kernel: true
+  ddp_size: 1
+  tp_size: 1
+  sp_size: 1
+  max_inference_length_per_device: 6144
+  temperature: 1.0
+  offload_model: true
+critic:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  gradient_checkpointing: true
+  ddp_size: 1
+  tp_size: 1
+  sp_size: 1
+  max_length_per_device: 6144
+  max_inference_length_per_device: 6144
+  update_per_rollout: 4
+  clip: 0.5
+  avg_level: sequence
+  lr: 5.0e-06
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  scheduler: constant
+  warmup_ratio: 0.1
+  offload_model: true
+  offload_optimizer: true
+adv:
+  estimator: reinforce
+  gamma: 1.0
+  lamda: 1.0
+  global_norm: false
+  norm_var: false
+trainer:
+  project: Exploring-Paths-Completion
+  experiment_name: long-dr_grpo-s0
+  seed: 0
+  load_ckpt_from: null
+  n_epochs: 1000
+  max_steps: null
+  test_freq: 20
+  save_dir: /workspace/repos/exploring-paths-llm/outputs/long/dr_grpo
+  save_freq: 10
+  keep_checkpoints: 1
+  save_final_model: true
+  stop_file: /workspace/repos/exploring-paths-llm/outputs/long/STOP
+  use_wandb: true
+  long_budget_seconds: 0

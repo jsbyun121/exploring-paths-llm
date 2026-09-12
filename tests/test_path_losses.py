@@ -62,6 +62,37 @@ class RankShiftJSDTest(unittest.TestCase):
         self.assertEqual(in_cap.tolist(), [True, False])
 
 
+class RankKLTest(unittest.TestCase):
+    def test_full_vocabulary_value_and_gradient_with_truncated_topk(self):
+        # Action rank 3, cap 4, vocabulary 6: unchanged tail gradients matter.
+        z = torch.tensor([[1., 4., -2., 3., 2., -1.]], requires_grad=True)
+        loss, _, _ = rank_shift_jsd(
+            z, torch.logsumexp(z, -1), torch.tensor([4]),
+            rank_cap=4, divergence="kl",
+        )
+        p = z.softmax(-1)
+        target = p.detach().clone()
+        order = z.detach().argsort(descending=True)[0, :3]
+        target[0, order] = p.detach()[0, order.roll(-1)]
+        reference = (target * (target.log() - z.log_softmax(-1))).sum(-1)
+        g = torch.autograd.grad(loss.sum(), z, retain_graph=True)[0]
+        expected = torch.autograd.grad(reference.sum(), z)[0]
+        torch.testing.assert_close(loss, reference, atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(g, expected, atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(g, p.detach() - target, atol=1e-6, rtol=1e-5)
+        self.assertLess(g[0, 4].item(), 0)
+
+    def test_rank_one_and_out_of_cap_zero_gradient(self):
+        z = torch.tensor([[3., 2., 1., 0.], [3., 2., 1., 0.]], requires_grad=True)
+        loss, _, _ = rank_shift_jsd(
+            z, torch.logsumexp(z, -1), torch.tensor([0, 3]),
+            rank_cap=2, divergence="kl",
+        )
+        loss.sum().backward()
+        torch.testing.assert_close(loss, torch.zeros_like(loss), atol=1e-6, rtol=0)
+        torch.testing.assert_close(z.grad, torch.zeros_like(z), atol=1e-6, rtol=0)
+
+
 class LegacyObjectiveAuditTest(unittest.TestCase):
 
     def test_fixed_half_legacy_ignores_low_probability_action(self):

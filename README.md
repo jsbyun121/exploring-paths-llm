@@ -2,11 +2,27 @@
 
 This repository contains the implementation and experimental code for the paper **"Exploring Paths in Probabilistic Graphs for Model Training"**.
 
+## Current experiment results
+
+The [September 12, 2026 results report](experiments/EXPERIMENT_RESULTS.md)
+records the completed 100-step diagnostics and long-run checkpoint evaluations,
+with source hashes and machine-readable metrics. Best-checkpoint greedy accuracy
+on the shared 200-question GSM8K validation subset is 95.0% for positive CE,
+94.5% for Dr.GRPO, and 93.5% for rank-JSD. These are single-seed, validation-selected
+recipe comparisons, not official test-set results or evidence of causal
+loss-function superiority. SAPO is incomplete; forgetting evaluations are pending.
+
+Current code includes rank-JSD/rank-KL, positive CE, Dr.GRPO/SAPO objectives,
+optimizer-state recovery, padding optimizations, paired evaluations, and the
+[preregistered forgetting suite](experiments/forgetting/README.md).
+The paper reproduction instructions below describe the original experiments;
+current runs use the configurations in `experiments/a100/`.
+
 ## Overview
 
 This work proposes a novel training algorithm that learns from diverse probabilistic reasoning paths by exclusively targeting correct states. The method applies an explicit token-level loss formulated as the expected Jensen-Shannon Divergence (JSD) or Kullback-Leibler (KL) divergence between the selected correct token's probability and the maximum probability token at each step.
 
-**Key Results on GSM8K:**
+**Original paper observations on GSM8K:**
 - Consistent improvements in both accuracy and entropy
 - Distinct training phases: exploration → consolidation → (potential collapse)
 - More token-efficient reasoning compared to baseline Dr.GRPO
@@ -95,7 +111,7 @@ The answer extraction logic is implemented in `envs/gsm8k.py`:
 
 ## Experiments
 
-All experiments use the following **common hyperparameters**:
+The original paper experiments use the following **common hyperparameters**:
 - **Base Model:** `Qwen/Qwen3-4B-Thinking-2507`
 - **Batch Size:** 512 sequences per batch
 - **Sampling Temperature:** 1.0 (training), 0.0 (evaluation/greedy)
@@ -393,7 +409,7 @@ actor.entropy.coef=-0.1  # or -0.5, -1.0 (Use negative coefficient to dampen ent
 ```
 
 ### 2. Rank-Aware Target with JSD (Section 4.3)
-- Not yet implemented in current codebase
+- Implemented in `RL2.trainer.path` with `actor.path.objective=rank_jsd`
 - Promotes chosen token to rank 1
 - Uses Jensen-Shannon Divergence
 - Computational efficiency: O(k) where k = rank of chosen token

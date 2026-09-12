@@ -131,10 +131,12 @@ class Rollout(Worker):
         scores = []
         for turn in range(1, self.config.max_turns + 1):
 
+            sampling_params = dict(self.train_sampling_params if train else self.test_sampling_params)
+            if "_sampling_seed" in ex:
+                sampling_params["sampling_seed"] = (ex["_sampling_seed"] + turn - 1) % (2**31)
             llm_response = await self.llm.async_generate(
                 input_ids=state_dict["states"],
-                sampling_params=self.train_sampling_params
-                if train else self.test_sampling_params,
+                sampling_params=sampling_params,
                 return_logprob=True
             )
 
@@ -184,6 +186,10 @@ class Rollout(Worker):
         # and guarantees the load balancing across all model computations.
         if self.device_mesh["tp"].get_local_rank() == 0:
 
+            if data_list is not None and getattr(self.config, "sampling_seed_base", None) is not None:
+                data_list = [{**ex, "_sampling_seed": (
+                    self.config.sampling_seed_base + (step if train else 0) * 1000003 + index
+                ) % (2**31)} for index, ex in enumerate(data_list)]
             data_list = split_and_scatter_list(
                 data_list, self.device_mesh["dp"]
             )
@@ -213,7 +219,7 @@ class Rollout(Worker):
                 f"{k}/{suffix}": sum([metric[k] for metric in metrics], [])
                 for k in metrics[0].keys()
             }
-            gather_and_log(metrics, self.device_mesh["dp"], step)
+            self.last_metrics = gather_and_log(metrics, self.device_mesh["dp"], step)
 
             if not train:
                 return

@@ -58,7 +58,8 @@ class Worker:
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
                 lr=self.config.lr,
-                weight_decay=self.config.weight_decay
+                weight_decay=self.config.weight_decay,
+                betas=tuple(getattr(self.config, "adam_betas", (0.9, 0.999))),
             )
 
         load_model_to_device(self, "cpu")

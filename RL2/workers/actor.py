@@ -12,6 +12,7 @@ from RL2.utils.functions import (
 )
 from RL2.utils.algorithms import compute_approx_kl
 from RL2.utils.path_losses import compute_path_loss
+from RL2.utils.path_batching import trim_right_padding, causal_position_ids
 from RL2.utils.offloading import model_offloading_manager
 from RL2.utils.checkpointing import get_state_dict
 from RL2.utils.logging import (
@@ -64,9 +65,17 @@ class Actor(Worker):
     @sequence_parallelism_manager
     def forward_original(self, minibatch, return_entropy=False):
 
+        original_width = minibatch["states"].shape[1]
+        optimized = (getattr(self.config, "optimized_batching", False)
+                     and self.device_mesh["sp"].size() == 1
+                     and self.device_mesh["tp"].size() == 1
+                     and self.device_mesh["dp"].size() == 1)
+        if optimized:
+            minibatch = trim_right_padding(minibatch)
+        positions = causal_position_ids(minibatch) if optimized else minibatch["position_ids"]
         logits = self.model(
             input_ids=minibatch["states"],
-            position_ids=minibatch["position_ids"],
+            position_ids=positions,
             use_cache=False
         ).logits.to(torch.float32) / getattr(
             self.config, "temperature", 1.0
@@ -81,11 +90,16 @@ class Actor(Worker):
             self.device_mesh["tp"]
         )
         logps = (action_logits - logsumexp) * minibatch["action_mask"]
-        
+        # Gather operations concatenate to the original padded width.
+        padding = original_width - logps.shape[1]
+        if padding:
+            logps = torch.nn.functional.pad(logps, (0, padding))
         if return_entropy:
             entropy = self.compute_entropy(logits, logsumexp) * minibatch[
                 "action_mask"
             ]
+            if padding:
+                entropy = torch.nn.functional.pad(entropy, (0, padding))
             return logps, entropy
         else:
             return logps
@@ -151,9 +165,13 @@ class Actor(Worker):
     def forward_path(self, minibatch):
         """Compute a configured successful-path objective without logit clones."""
 
+        positions = minibatch["position_ids"]
+        if (getattr(self.config.path, "causal_padding_positions", False)
+                and self.device_mesh["sp"].size() == 1):
+            positions = causal_position_ids(minibatch)
         logits = self.model(
             input_ids=minibatch["states"],
-            position_ids=minibatch["position_ids"],
+            position_ids=positions,
             use_cache=False,
         ).logits.to(torch.float32) / getattr(self.config, "temperature", 1.0)
 
@@ -270,6 +288,22 @@ class Actor(Worker):
                     total_actions,
                     total_sequences
                 )
+                paper_loss = getattr(self.config, "policy_loss", "ppo")
+                if paper_loss != "ppo":
+                    from RL2.utils.policy_losses import policy_loss
+                    if "old_logps" not in minibatch:
+                        raise ValueError("Paper policy objectives require frozen old logps")
+                    if self.config.tis_coef != 0:
+                        raise ValueError("Paper baselines use tis_coef=0; no extra weighting")
+                    loss = policy_loss(
+                        paper_loss, logps, minibatch["old_logps"],
+                        minibatch["advantages"], minibatch["action_mask"],
+                        total_sequences=total_sequences,
+                        max_completion_length=self.config.max_completion_length,
+                        clip=self.config.clip,
+                        tau_pos=getattr(self.config, "sapo_tau_pos", 1.0),
+                        tau_neg=getattr(self.config, "sapo_tau_neg", 1.05),
+                    )
                 if self.config.entropy.coef != 0:
                     loss = loss - self.config.entropy.coef * entropy
                 if self.config.kl.coef > 0 and self.config.kl.type == "loss":
@@ -563,8 +597,15 @@ class Actor(Worker):
             total_rank_count = 0
             total_entropy_all_sum = 0.0
             total_entropy_all_sequences = 0
+            total_dense_tokens = 0
+            total_original_tokens = 0
 
             for minibatch in batch:
+                total_original_tokens += minibatch["states"].numel()
+                if (getattr(self.config.path, "trim_padding", False)
+                        and self.device_mesh["sp"].size() == 1):
+                    minibatch = trim_right_padding(minibatch)
+                total_dense_tokens += minibatch["states"].numel()
                 losses, entropy, ranks, in_cap = self.forward_path(minibatch)
                 action_mask = minibatch["action_mask"].bool()
                 correct_mask = minibatch["advantages"].sum(-1) > 0
@@ -628,7 +669,7 @@ class Actor(Worker):
                     selected_tokens = int(selected_token_mask.sum().item())
                     total_correct_tokens += correct_tokens
                     total_selected_tokens += selected_tokens
-                    if self.config.path.objective == "rank_jsd":
+                    if self.config.path.objective in {"rank_jsd", "rank_kl"}:
                         rank1 = correct_token_mask & ranks.eq(1)
                         covered = correct_token_mask & in_cap.bool()
                         promoted = covered & ranks.gt(1)
@@ -665,7 +706,11 @@ class Actor(Worker):
             metric["actor/entropy_all"] = [
                 total_entropy_all_sum / max(total_entropy_all_sequences, 1)
             ]
-            if self.config.path.objective == "rank_jsd":
+            metric["path/dense_tokens"] = [total_dense_tokens]
+            metric["path/padding_compute_retained"] = [
+                total_dense_tokens / max(total_original_tokens, 1)
+            ]
+            if self.config.path.objective in {"rank_jsd", "rank_kl"}:
                 metric["path/rank1_fraction"] = [
                     total_rank1_tokens / max(total_correct_tokens, 1)
                 ]

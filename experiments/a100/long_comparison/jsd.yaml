@@ -1,0 +1,89 @@
+train_data:
+  path: train[500:]@openai/gsm8k:main
+  prompts_per_rollout: 512
+  responses_per_prompt: 1
+  enable_thinking: false
+test_data:
+  path: train[:500]@openai/gsm8k:main
+  prompts_per_rollout: null
+  responses_per_prompt: 1
+  enable_thinking: false
+actor:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  use_liger_kernel: true
+  attn_implementation: sdpa
+  gradient_checkpointing: true
+  ddp_size: 1
+  tp_size: 1
+  sp_size: 1
+  max_length_per_device: 6144
+  max_inference_length_per_device: 6144
+  temperature: 1.0
+  update_per_rollout: 1
+  clip: 0.2
+  avg_level: sequence
+  lr: 1.0e-06
+  adam_betas:
+  - 0.0
+  - 0.999
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  tis_coef: 0.0
+  scheduler: constant
+  warmup_ratio: 0.1
+  freeze_steps: 0
+  offload_model: true
+  offload_optimizer: true
+  path:
+    objective: rank_jsd
+    rank_cap: 64
+    token_entropy_quantile: 0.0
+    normalize_selected_tokens: false
+    trim_padding: true
+    length_bucketed_batches: true
+    causal_padding_positions: true
+  kl:
+    coef: 0.0
+    type: null
+    reward_estimator: k1
+    loss_estimator: k2
+  entropy:
+    coef: 0.0
+rollout:
+  model_name: Qwen/Qwen3-4B-Thinking-2507
+  dtype: bfloat16
+  tp_size: 1
+  gpu_memory_utilization: 0.3
+  mamba_scheduler_strategy: auto
+  release_memory_for_training: true
+  sampling_seed_base: 0
+  responses_per_prompt: 1
+  train_sampling_params:
+    temperature: 1.0
+    max_new_tokens: 4096
+    stop: null
+    no_stop_trim: true
+  test_sampling_params:
+    temperature: 0.0
+    max_new_tokens: 4096
+    stop: null
+    no_stop_trim: true
+  max_turns: 1
+  env_path: envs/gsm8k.py
+  dynamic_filtering: false
+  base_port: 30000
+trainer:
+  project: Exploring-Paths-Completion
+  experiment_name: long-jsd-s0
+  seed: 0
+  load_ckpt_from: /workspace/repos/exploring-paths-llm/outputs/focused/training_jsd_beta1_zero/qwen3-4b-thinking-2507_rank_jsd_h0p0_q0p0_s0/step100
+  n_epochs: 1000
+  max_steps: null
+  test_freq: 20
+  save_dir: /workspace/repos/exploring-paths-llm/outputs/long/jsd
+  save_freq: 10
+  keep_checkpoints: 1
+  save_final_model: true
+  stop_file: /workspace/repos/exploring-paths-llm/outputs/long/STOP
+  use_wandb: true
+  long_budget_seconds: 0

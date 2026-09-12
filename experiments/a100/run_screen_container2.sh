@@ -25,7 +25,7 @@ fi
 # The Blackwell environment intentionally omits flash-attn because FA2 does
 # not support SM120. Install it lazily in the A100 container so actor training
 # uses the faster, memory-efficient path that the historical A100 runs used.
-if ! "${python_bin}" -c 'import flash_attn' >/dev/null 2>&1; then
+if [[ "${ATTN_IMPLEMENTATION:-sdpa}" == flash_attention_2 ]] && ! "${python_bin}" -c 'import flash_attn' >/dev/null 2>&1; then
     printf 'Installing flash-attn 2.8.3 for the A100 environment...\n'
     if command -v uv >/dev/null 2>&1; then
         uv pip install --python "${python_bin}" --no-build-isolation 'flash-attn==2.8.3'
@@ -35,9 +35,12 @@ if ! "${python_bin}" -c 'import flash_attn' >/dev/null 2>&1; then
 fi
 
 export MODEL="${MODEL:-Qwen/Qwen3-4B-Thinking-2507}"
-export ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
-export ACTOR_TOKEN_BUDGET="${ACTOR_TOKEN_BUDGET:-8192}"
-export ENTROPY_ACTOR_TOKEN_BUDGET="${ENTROPY_ACTOR_TOKEN_BUDGET:-6144}"
+# Transformers 5.6's kernels-community FA2 adapter returns no softmax aux
+# tensor for this Qwen3 path, then dereferences it during actor training.
+# Native SDPA is fused on A100 and supports the required backward pass.
+export ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+export ACTOR_TOKEN_BUDGET="${ACTOR_TOKEN_BUDGET:-6144}"
+export ENTROPY_ACTOR_TOKEN_BUDGET="${ENTROPY_ACTOR_TOKEN_BUDGET:-4096}"
 export ROLLOUT_GPU_FRACTION="${ROLLOUT_GPU_FRACTION:-0.30}"
 # TorchMemorySaver cannot coexist with expandable_segments in the current
 # dependency set used for colocated rollout/training.
@@ -46,6 +49,6 @@ export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-max_split_size_mb:512}"
 # A100 containers historically had working W&B connectivity. Override with
 # WANDB_MODE=offline if the new container cannot reach api.wandb.ai.
 export WANDB_MODE="${WANDB_MODE:-online}"
-export METHODS="${METHODS:-rank_jsd rank_jsd_entropy}"
+export METHODS="${METHODS:-rank_jsd}"
 
 exec "${SCRIPT_DIR}/run_screen.sh"

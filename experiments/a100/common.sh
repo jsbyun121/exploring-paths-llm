@@ -9,6 +9,21 @@ if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
     export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
 fi
 
+# SGLang's memory-saver subprocess preloads the CUDA runtime by soname.  The
+# PyTorch CUDA 13 wheel keeps that runtime inside the virtual environment, a
+# directory that is available through wheel RPATHs to the parent process but
+# not to a freshly exec'd Python subprocess.  Put it on the dynamic-loader
+# path for every launcher, including the A100-specific one.
+cuda_runtime_dir=""
+for candidate in "${REPO_ROOT}"/.venv/lib/python*/site-packages/nvidia/cu*/lib; do
+    if compgen -G "${candidate}/libcudart.so.*" >/dev/null; then
+        cuda_runtime_dir="${candidate}"
+    fi
+done
+if [[ -n "${cuda_runtime_dir}" ]]; then
+    export LD_LIBRARY_PATH="${cuda_runtime_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -44,10 +59,9 @@ ENTROPY_ACTOR_TOKEN_BUDGET="${ENTROPY_ACTOR_TOKEN_BUDGET:-6144}"
 ROLLOUT_GPU_FRACTION="${ROLLOUT_GPU_FRACTION:-0.30}"
 MAX_STEPS="${MAX_STEPS:-150}"
 TEST_FREQ="${TEST_FREQ:-25}"
-# One recovery checkpoint at step 100 is enough for the 150-step screen. Each
-# optimizer checkpoint is ~24 GiB, so saving at 50/100/150 exhausts the 160 GiB
-# workspace after only two methods.
-SAVE_FREQ="${SAVE_FREQ:-100}"
+# Frequent recovery points with bounded retention; each is about 24 GiB.
+SAVE_FREQ="${SAVE_FREQ:-10}"
+KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-2}"
 RANK_CAP="${RANK_CAP:-64}"
 
 mkdir -p "${RUN_ROOT}" "${LOG_ROOT}"
@@ -59,22 +73,21 @@ model_slug() {
     printf '%s' "${value}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-'
 }
 
-remove_intermediate_checkpoints() {
+run_is_complete() {
     local save_dir="$1"
-    local checkpoint
-    local removed=0
-
-    # Called only after torchrun and save_model have completed successfully.
-    # Restrict deletion to numbered step directories directly under this run.
-    for checkpoint in "${save_dir}"/step[0-9]*; do
-        if [[ -d "${checkpoint}" && "${checkpoint}" == "${save_dir}"/step* ]]; then
-            find "${checkpoint}" -depth -delete
-            removed=1
-        fi
-    done
-    if (( removed )); then
-        printf 'Removed intermediate optimizer checkpoints from %s\n' "${save_dir}"
+    if [[ -f "${save_dir}/completed.json" && -f "${save_dir}/latest/config.json" ]]; then
+        python - "${save_dir}/completed.json" "${MAX_STEPS}" <<'PY'
+import json,sys
+step = json.load(open(sys.argv[1])).get('step')
+sys.exit(0 if step is not None and step >= int(sys.argv[2]) else 1)
+PY
+        return $?
     fi
+    if [[ -f "${save_dir}/latest/config.json" ]] && ! compgen -G "${save_dir}/step*/.metadata" >/dev/null; then
+        printf 'Legacy final model without recovery/completion metadata under %s; use a new RUN_ROOT or recover its checkpoint.\n' "${save_dir}" >&2
+        exit 1
+    fi
+    return 1
 }
 
 run_path() {
@@ -95,8 +108,7 @@ run_path() {
     local save_dir="${RUN_ROOT}/${name}"
     local log_file="${LOG_ROOT}/${name}.log"
 
-    if [[ -f "${save_dir}/latest/config.json" ]]; then
-        remove_intermediate_checkpoints "${save_dir}"
+    if run_is_complete "${save_dir}"; then
         printf 'Skipping completed run: %s\n' "${name}"
         return
     fi
@@ -139,11 +151,11 @@ run_path() {
         "trainer.max_steps=${MAX_STEPS}" \
         "trainer.test_freq=${TEST_FREQ}" \
         "trainer.save_freq=${SAVE_FREQ}" \
+        "trainer.keep_checkpoints=${KEEP_CHECKPOINTS}" \
         "trainer.save_dir=${save_dir}" \
         "${resume_args[@]}" \
         "${EXTRA_HYDRA_ARRAY[@]}" \
         2>&1 | tee -a "${log_file}"
-    remove_intermediate_checkpoints "${save_dir}"
 }
 
 run_drgrpo() {
@@ -152,8 +164,7 @@ run_drgrpo() {
     local save_dir="${RUN_ROOT}/${name}"
     local log_file="${LOG_ROOT}/${name}.log"
 
-    if [[ -f "${save_dir}/latest/config.json" ]]; then
-        remove_intermediate_checkpoints "${save_dir}"
+    if run_is_complete "${save_dir}"; then
         printf 'Skipping completed run: %s\n' "${name}"
         return
     fi
@@ -194,9 +205,9 @@ run_drgrpo() {
         "trainer.max_steps=${MAX_STEPS}" \
         "trainer.test_freq=${TEST_FREQ}" \
         "trainer.save_freq=${SAVE_FREQ}" \
+        "trainer.keep_checkpoints=${KEEP_CHECKPOINTS}" \
         "trainer.save_dir=${save_dir}" \
         "${resume_args[@]}" \
         "${EXTRA_HYDRA_ARRAY[@]}" \
         2>&1 | tee -a "${log_file}"
-    remove_intermediate_checkpoints "${save_dir}"
 }

@@ -114,3 +114,5 @@ trainer:
   save_dir: /storage/junsoo/ppo/${trainer.experiment_name}
   save_freq: null
   use_wandb: true
+  keep_checkpoints: 2
+  stop_file: null

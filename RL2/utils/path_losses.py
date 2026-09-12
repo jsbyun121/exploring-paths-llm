@@ -81,8 +81,9 @@ def rank_shift_jsd(
     actions: torch.Tensor,
     *,
     rank_cap: int,
+    divergence: str = "jsd",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """JSD to the rank-shifted, stop-gradient current distribution.
+    """JSD (default) or forward KL to a detached rank-shifted target.
 
     For a chosen action at rank r, the target rotates the probabilities over
     ranks 1..r: ``[q1, q2, ..., qr] -> [q2, ..., qr, q1]`` on the tokens in
@@ -151,9 +152,17 @@ def rank_shift_jsd(
     log_p = torch.log(p.clamp_min(tiny))
     mixture = 0.5 * (p + q)
     log_mixture = torch.log(mixture.clamp_min(tiny))
-    terms = 0.5 * (
-        p * (log_p - log_mixture) + q * (log_q - log_mixture)
-    )
+    if divergence == "jsd":
+        terms = 0.5 * (
+            p * (log_p - log_mixture) + q * (log_q - log_mixture)
+        )
+    elif divergence == "kl":
+        # Generalized KL has the same value on this mass-preserving rotation.
+        # The -p+q correction is essential: omitting unchanged tail terms
+        # from ordinary KL would otherwise give the WRONG gradient.
+        terms = p * (log_p - log_q) - p + q
+    else:
+        raise ValueError(f"Unknown rank divergence: {divergence}")
 
     active_support = positions <= rank_position
     active_support = active_support & in_cap.unsqueeze(-1)
@@ -194,9 +203,10 @@ def compute_path_loss(
         losses = fixed_half_kl(
             action_logps, legacy_high_probability_only=False
         )
-    elif objective == "rank_jsd":
+    elif objective in {"rank_jsd", "rank_kl"}:
         losses, ranks, in_cap = rank_shift_jsd(
-            logits, logsumexp, actions, rank_cap=rank_cap
+            logits, logsumexp, actions, rank_cap=rank_cap,
+            divergence="kl" if objective == "rank_kl" else "jsd",
         )
     else:
         raise ValueError(f"Unknown path objective: {objective}")

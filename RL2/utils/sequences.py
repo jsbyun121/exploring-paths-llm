@@ -4,6 +4,7 @@ import functools
 import torch
 import torch.distributed as dist
 from RL2.utils.seqlen_balance import get_seqlen_balanced_partitions
+from RL2.utils.path_batching import length_bucketed_partitions
 from RL2.utils.comm import (
     split_and_scatter_list,
     boardcast_list,
@@ -13,6 +14,7 @@ from RL2.utils.comm import (
 def _tensor_dict_to_minibatches(
     worker, tensor_dict, pair: bool
 ):
+    global PAD_SEQUENCES, SHUFFLE_INDICES
 
     # We pack sequences into minibatches for higher throughput.
     # There are two constrains:
@@ -39,6 +41,19 @@ def _tensor_dict_to_minibatches(
     assert max(seq_len_list) <= max_length_per_dp, \
         f"The longest sequence has a total length of {max(seq_len_list)}," \
         f"which exceeds the maximum length per dp {max_length_per_dp}."
+    path_config = getattr(worker.config, "path", None)
+    if ((getattr(path_config, "length_bucketed_batches", False)
+             or getattr(worker.config, "optimized_batching", False))
+            and getattr(path_config, "token_entropy_quantile", 0.0) == 0.0
+            and worker.device_mesh["dp"].size() == 1
+            and worker.device_mesh["sp"].size() == 1
+            and worker.device_mesh["tp"].size() == 1 and not pair):
+        partitions = length_bucketed_partitions(seq_len_list, max_length_per_dp)
+        # Globals also serve the inverse permutation for gather operations.
+        PAD_SEQUENCES = 0
+        SHUFFLE_INDICES = sum(partitions, [])
+        return [{k: v[partition] for k, v in tensor_dict.items()}
+                for partition in partitions]
     n_minibatches = math.ceil(
         sum(seq_len_list) / max_length_per_dp
     )
@@ -49,7 +64,6 @@ def _tensor_dict_to_minibatches(
     # Partition sequences into n_minibatches balanced minibatches.
     while True:
 
-        global PAD_SEQUENCES
         if n_minibatches > len(seq_len_list):
             # The number of sequences must be no less than `n_minibatches`.
             # If not, we pad the number of sequences to `n_minibatches`.
@@ -85,7 +99,6 @@ def _tensor_dict_to_minibatches(
             sum([[2 * p, 2 * p + 1] for p in partition], [])
             for partition in partitions
         ]
-    global SHUFFLE_INDICES
     SHUFFLE_INDICES = sum(partitions, [])
 
     return [

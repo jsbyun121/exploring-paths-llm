@@ -1,0 +1,65 @@
+{
+  "schema": "catastrophic-forgetting-suite/v1",
+  "frozen_before_results": true,
+  "hypothesis": "Rank-shift JSD retains more base-model capability than Dr.GRPO at matched training exposure while preserving GSM8K plasticity.",
+  "claim_scope": {
+    "current_seed0_checkpoints": "Exploratory training-recipe comparison only.",
+    "reason": "Existing JSD and Dr.GRPO recipes differ in optimizer beta1, responses per prompt, and update epochs as well as objective.",
+    "confirmatory_loss_function_claim_requires": {
+      "seeds": [0, 1, 2],
+      "same_optimizer_hyperparameters": true,
+      "same_prompts_and_responses_per_rollout": true,
+      "same_update_epochs": true,
+      "same_decoding_and_stop_rules": true,
+      "same_training_examples": true,
+      "only_intended_difference": "rank-shift JSD versus Dr.GRPO objective/advantage construction"
+    }
+  },
+  "base_model": "Qwen/Qwen3-4B-Thinking-2507",
+  "primary_tasks": [
+    {"name": "mmlu", "metric": "acc", "weight": 0.25},
+    {"name": "arc_challenge", "metric": "acc_norm", "weight": 0.25},
+    {"name": "hellaswag", "metric": "acc_norm", "weight": 0.25},
+    {"name": "winogrande", "metric": "acc", "weight": 0.25}
+  ],
+  "secondary_tasks": [
+    {"name": "truthfulqa_mc2", "metric": "acc"},
+    {"name": "wikitext", "metric": "word_perplexity", "lower_is_better": true}
+  ],
+  "plasticity_tasks": [
+    {"name": "gsm8k", "split": "test", "metric": "exact_match", "included_in_forgetting_aggregate": false}
+  ],
+  "lm_eval": {
+    "model_backend": "hf",
+    "dtype": "bfloat16",
+    "batch_size": "auto",
+    "device": "cuda:0",
+    "num_fewshot": 0,
+    "apply_chat_template": true,
+    "log_samples": true,
+    "seed": "0,0,0,0"
+  },
+  "exposure_matching": {
+    "primary": "generated_tokens",
+    "fallback": "rollout_responses",
+    "report_step_matched_as_sensitivity_analysis": true,
+    "maximum_relative_gap": 0.1
+  },
+  "primary_endpoint": {
+    "name": "retention_auc_difference_in_differences",
+    "definition": "Weighted macro accuracy delta from base, integrated over matched training exposure; JSD minus Dr.GRPO.",
+    "higher_is_better": true,
+    "confidence_interval": "paired hierarchical bootstrap over tasks and shared item IDs",
+    "bootstrap_replicates": 10000,
+    "alpha": 0.05
+  },
+  "plasticity_noninferiority_margin_absolute": -0.02,
+  "reporting_rules": [
+    "Report every registered model and task, including failed parses and missing runs.",
+    "Never label a best-model export as a later recovery step.",
+    "Do not include GSM8K or other training-domain tasks in the forgetting aggregate.",
+    "Report absolute accuracy, base-relative delta, relative retention, and confidence intervals.",
+    "A less-forgetting claim requires a positive primary JSD-minus-Dr.GRPO confidence interval and non-inferior GSM8K plasticity under a separately declared margin.",
+    "Single-seed results are exploratory and cannot support a broad algorithm-level claim without replication."
+  ]
+}
